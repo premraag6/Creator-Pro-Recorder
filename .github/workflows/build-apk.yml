@@ -26,74 +26,107 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK (fixed version)
+        run: |
+          # 1. Detect preinstalled Android SDK location on GitHub Actions Runner
+          if [ -d "/usr/local/lib/android/sdk" ]; then
+            SDK_PATH="/usr/local/lib/android/sdk"
+          elif [ -d "$ANDROID_SDK_ROOT" ]; then
+            SDK_PATH="$ANDROID_SDK_ROOT"
+          else
+            SDK_PATH="$HOME/Android/Sdk"
+          fi
+
+          echo "ANDROID_HOME=$SDK_PATH" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK_PATH" >> $GITHUB_ENV
+          echo "$SDK_PATH/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$SDK_PATH/platform-tools" >> $GITHUB_PATH
+
+          echo "Using Android SDK at: $SDK_PATH"
 
       - name: Configure Android SDK & Accept Licenses
         run: |
-          # Ensure local.properties points to the runner's Android SDK
+          # 2. Automatically generate android/local.properties for Gradle
+          mkdir -p android
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cat android/local.properties
 
-          # Accept all SDK licenses automatically
+          # 3. Accept all Android SDK licenses non-interactively
+          mkdir -p "$ANDROID_HOME/licenses" || true
           yes | sdkmanager --licenses || true
 
-          # Install required Android 15 (API 35) platform and build tools
+          # 4. Install target Android SDK platform and build tools
           sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: 8.7
+          cache-read-only: false
 
       - name: Generate Wrapper and Build Android Debug APK
         working-directory: ./android
         run: |
-          # Generate wrapper if missing
-          gradle wrapper --gradle-version 8.7 || true
-          if [ -f "gradlew" ]; then
-            chmod +x gradlew
-            ./gradlew assembleDebug --no-daemon --stacktrace
-          else
-            gradle assembleDebug --no-daemon --stacktrace
+          # Fix missing gradle-wrapper.jar if not committed to git
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Generating Gradle Wrapper files..."
+            gradle wrapper --gradle-version 8.7
           fi
+          chmod +x gradlew
+          ls -la
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Prepare APK for Distribution
         run: |
           mkdir -p build-output
-          cp android/app/build/outputs/apk/debug/app-debug.apk build-output/CreatorProRecorder-v1.0.0.apk
-          ls -lh build-output/CreatorProRecorder-v1.0.0.apk
-          echo "APK successfully compiled at build-output/CreatorProRecorder-v1.0.0.apk"
+          APK_SRC=$(find android/app/build/outputs/apk/debug/ -name "*.apk" | head -n 1)
+          if [ -f "$APK_SRC" ]; then
+            cp "$APK_SRC" build-output/CreatorProRecorder-v1.0.0-debug.apk
+            echo "APK ready: build-output/CreatorProRecorder-v1.0.0-debug.apk"
+            ls -lh build-output/
+          else
+            echo "Error: APK not found in build outputs!"
+            exit 1
+          fi
 
       - name: Upload Public APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CreatorProRecorder-APK
-          path: build-output/CreatorProRecorder-v1.0.0.apk
-          retention-days: 90
+          name: CreatorProRecorder-Debug-APK
+          path: build-output/CreatorProRecorder-v1.0.0-debug.apk
+          retention-days: 30
+          if-no-files-found: error
 
       - name: Publish Public GitHub Release (on Tag or Manual Run)
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          files: build-output/CreatorProRecorder-v1.0.0.apk
+          files: build-output/CreatorProRecorder-v1.0.0-debug.apk
           name: "Creator Pro Recorder Release ${{ github.ref_name || 'v1.0.0' }}"
+          tag_name: ${{ github.ref_name || 'v1.0.0' }}
+          generate_release_notes: true
           body: |
-            ## 🚀 Creator Pro Recorder — Public Android APK
-            
+            ## 🚀 Creator Pro Recorder — Android APK Release
+
             Download and install the standalone, 100% private Android screen recording app.
-            
-            ### ✨ Features:
+
+            ### ✨ App Features:
             - **Zero Ads & Zero Tracking**: 100% offline-first. Video/Audio never leaves your phone.
             - **1080p / 4K Capture**: High-framerate (60-120 FPS) screen capture via Android MediaProjection.
             - **Custom Area Crop**: Interactive drag-and-crop region recording (9:16 Shorts, 16:9, 1:1, etc.).
             - **Internal Sound + Microphone**: Simultaneous dual-channel audio mixing with live decibel meters.
             - **Floating Facecam Bubble**: Front camera overlay with custom shapes (Circle, Rounded, Square).
             - **In-App Video Trimmer**: Scrub, cut, and export clips directly to your phone storage.
-            
+
+            ### 📦 Build Details:
+            - **Package**: `com.creatorpro.recorder`
+            - **Version**: `1.0.0`
+            - **Target SDK**: Android 15 (API 35)
+            - **Minimum SDK**: Android 8.0 (API 26)
+
             ### 📥 Installation Steps:
-            1. Download `CreatorProRecorder-v1.0.0.apk` below.
-            2. On your Android phone, tap the file to install (allow "Install from unknown sources" if prompted).
+            1. Download `CreatorProRecorder-v1.0.0-debug.apk` below.
+            2. On your Android phone, tap the file to install (allow "Install unknown apps" if prompted).
             3. Open **Creator Pro Recorder** and grant screen & audio permissions to record!
           draft: false
           prerelease: false
